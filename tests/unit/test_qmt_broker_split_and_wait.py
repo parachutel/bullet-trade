@@ -1,0 +1,68 @@
+import time
+
+import pytest
+
+
+from bullet_trade.broker.qmt import QmtBroker
+
+
+class DummyTrader:
+    pass
+
+
+@pytest.mark.asyncio
+async def test_split_volume_and_async_wait(monkeypatch):
+    broker = QmtBroker(account_id="test")
+    broker._connected = True
+
+    calls = []
+
+    def fake_send_order(security, amount, price, side):
+        calls.append((security, amount, price, side))
+        return f"id_{len(calls)}"
+
+    # 配置：每单最大 1000，异步等待（0）
+    monkeypatch.setattr(
+        "bullet_trade.utils.env_loader.get_live_trade_config",
+        lambda: {"order_max_volume": 1000, "trade_max_wait_time": 0},
+    )
+
+    broker._send_order = fake_send_order  # type: ignore
+
+    # 触发拆单：2500 = 1000 + 1000 + 500
+    first_id = await broker.buy("000001.XSHE", amount=2500, price=10.0)
+    assert first_id == "id_1"
+    assert calls == [
+        ("000001.SZ", 1000, 10.0, "buy"),
+        ("000001.SZ", 1000, 10.0, "buy"),
+        ("000001.SZ", 500, 10.0, "buy"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_sync_wait_breaks_early(monkeypatch):
+    broker = QmtBroker(account_id="test")
+    broker._connected = True
+
+    # 配置：同步等待 1s
+    monkeypatch.setattr(
+        "bullet_trade.utils.env_loader.get_live_trade_config",
+        lambda: {"order_max_volume": 1000000, "trade_max_wait_time": 1},
+    )
+
+    # 立即返回已成，_maybe_wait 应很快退出
+    async def _status(_oid):
+        return {"status": "filled"}
+
+    broker.get_order_status = _status  # type: ignore
+    t0 = time.time()
+    await broker._maybe_wait("abc")
+    assert time.time() - t0 < 1.0
+
+
+def test_qmt_symbol_mapping_roundtrip():
+    broker = QmtBroker(account_id="test")
+    assert broker._map_security("000001.XSHE") == "000001.SZ"
+    assert broker._map_security("600000.XSHG") == "600000.SH"
+    assert broker._map_to_jq_symbol("000001.SZ") == "000001.XSHE"
+    assert broker._map_to_jq_symbol("300750.SZ") == "300750.XSHE"

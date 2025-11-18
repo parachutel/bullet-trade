@@ -1,0 +1,22 @@
+# 包含额外文件到源代码分发包
+
+include README.md
+include README_EN.md
+include LICENSE
+include PLAN.md
+include REQ.md
+include requirements.txt
+include requirements-dev.txt
+include pytest.ini
+include env.example
+
+# 排除文件
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co]
+recursive-exclude tests *
+recursive-exclude docs *
+recursive-exclude examples *
+recursive-exclude scripts *
+exclude .env
+exclude .gitignore
+
