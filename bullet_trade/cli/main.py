@@ -247,7 +247,7 @@ def create_parser():
     # live 命令（待实现）
     live_parser = subparsers.add_parser(
         'live',
-        help='实盘交易 (开发中)'
+        help='实盘交易'
     )
     live_parser.add_argument(
         'strategy_file',
@@ -451,6 +451,25 @@ def create_parser():
         action='store_false',
         help='关闭请求访问日志'
     )
+
+    # jupyterlab / lab 命令
+    lab_parser = subparsers.add_parser(
+        'lab',
+        aliases=['jupyterlab'],
+        help='启动 BulletTrade 研究环境 (JupyterLab)'
+    )
+    lab_parser.add_argument('--ip', dest='ip', default=None, help='监听地址，默认 127.0.0.1')
+    lab_parser.add_argument('--port', dest='port', type=int, default=None, help='监听端口，默认 8088')
+    lab_parser.add_argument('--notebook-dir', dest='notebook_dir', default=None, help='Notebook 根目录（默认 ~/bullet-trade）')
+    lab_parser.add_argument('--no-browser', dest='no_browser', action='store_true', help='启动时不自动打开浏览器')
+    lab_parser.add_argument('--browser', dest='browser', action='store_true', help='强制启动后打开浏览器')
+    lab_parser.add_argument('--token', dest='token', default=None, help='指定访问 token')
+    lab_parser.add_argument('--no-token', dest='no_token', action='store_true', help='关闭 token 验证（不建议）')
+    lab_parser.add_argument('--password', dest='password', default=None, help='访问密码（可选，建议在公网监听时设置）')
+    lab_parser.add_argument('--certfile', dest='certfile', default=None, help='TLS 证书路径')
+    lab_parser.add_argument('--keyfile', dest='keyfile', default=None, help='TLS 私钥路径')
+    lab_parser.add_argument('--allow-origin', dest='allow_origin', default=None, help='允许的跨域来源')
+    lab_parser.add_argument('--diagnose', dest='diagnose', action='store_true', help='仅做依赖/端口诊断，不启动服务')
     return parser
 
 
@@ -487,6 +506,10 @@ def main():
     elif args.command == 'server':
         from bullet_trade.server.cli import run_server_command
         return run_server_command(args)
+    elif args.command in ('lab', 'jupyterlab'):
+        from bullet_trade.cli.jupyterlab import run_lab
+
+        return run_lab(args)
     else:
         print(f"未知命令: {args.command}")
         return 1

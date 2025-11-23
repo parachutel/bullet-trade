@@ -8,6 +8,7 @@ BulletTrade 是一套兼容聚宽 API 的量化研究与交易框架，支持多
 
 ## index
 - [快速上手](quickstart.md)：三步跑通回测/实盘，聚宽策略无改直接复用。
+- [研究环境（JupyterLab）](research.md)：`bullet-trade lab` 一键启动 Notebook，默认根目录、设置文件与示例说明。
 - [配置总览](config.md)：回测/本地实盘/远程实盘/聚宽接入的环境变量一览。
 - [回测引擎](backtest.md)：真实价格成交、分红送股处理、聚宽代码示例与 CLI 回测。
 - [实盘引擎](live.md)：本地 QMT 独立实盘与远程实盘流程。
