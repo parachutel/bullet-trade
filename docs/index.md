@@ -11,6 +11,7 @@ BulletTrade 是一套兼容聚宽 API 的量化研究与交易框架，支持多
 - [研究环境（JupyterLab）](research.md)：`bullet-trade lab` 一键启动 Notebook，默认根目录、设置文件与示例说明。
 - [配置总览](config.md)：回测/本地实盘/远程实盘/聚宽接入的环境变量一览。
 - [回测引擎](backtest.md)：真实价格成交、分红送股处理、聚宽代码示例与 CLI 回测。
+- [参数优化](optimize.md)：多进程并行参数寻优，自动找出最优策略参数。
 - [实盘引擎](live.md)：本地 QMT 独立实盘与远程实盘流程。
 - [交易支撑](trade-support.md)：聚宽模拟盘接入、远程 QMT 服务与 helper 用法。
 - [QMT 服务配置](qmt-server.md)：bullet-trade server 的完整说明。
@@ -58,6 +59,8 @@ BulletTrade 是一套兼容聚宽 API 的量化研究与交易框架，支持多
 ## 常用 CLI 速览
 - 回测：  
   `bullet-trade backtest strategies/demo_strategy.py --start 2024-01-01 --end 2024-03-01 --frequency minute --benchmark 000300.XSHG`
+- 参数优化：  
+  `bullet-trade optimize strategies/demo_strategy.py --params params.json --start 2020-01-01 --end 2023-12-31 --output optimization.csv`
 - 实盘（本地/远程 QMT，未配置时可先用模拟券商）：  
   `bullet-trade live strategies/demo_strategy.py --broker qmt`  
   `bullet-trade live strategies/demo_strategy.py --broker qmt-remote  # 需要 .env 配好 QMT_SERVER_*`
