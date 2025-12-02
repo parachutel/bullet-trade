@@ -239,7 +239,8 @@ def _merge_overrides(security: str, base_info: Dict[str, Any]) -> Dict[str, Any]
     if not category:
         if subtype in ('mmf', 'money_market_fund'):
             category = 'money_market_fund'
-        elif primary == 'fund':
+        elif primary in ('fund', 'etf'):
+            # jqdatasdk 返回 type='etf'，统一归类为 fund
             category = 'fund'
         elif primary == 'stock':
             category = 'stock'
@@ -723,7 +724,7 @@ def get_price(
         
         try:
             # 真实价格模式优先使用提供者内部引擎支持
-            log.debug(f"调用 provider.get_price(prefer_engine=True): security={security}, fields={fields}")
+            #log.debug(f"调用 provider.get_price(prefer_engine=True): security={security}, fields={fields}")
             result = _provider.get_price(
                 security=security,
                 start_date=start_date,
@@ -738,7 +739,7 @@ def get_price(
                 prefer_engine=True,
                 pre_factor_ref_date=pre_factor_ref_date
             )
-            log.debug(f"provider.get_price 返回: {type(result)}, {result.shape if hasattr(result, 'shape') else 'No shape'}")
+            #log.debug(f"provider.get_price 返回: {type(result)}, {result.shape if hasattr(result, 'shape') else 'No shape'}")
             df = _coerce_price_result_to_dataframe(result)
             return _make_compatible_dataframe(df, fields)
             
@@ -1069,11 +1070,32 @@ def get_index_stocks(
         return []
 
 
+def get_tick_decimals(security: str) -> int:
+    """获取标的的价格精度（小数位数）。
+    
+    根据 security_overrides.json 的配置确定：
+    - stock: 2位小数（0.01步长）
+    - fund/money_market_fund: 3位小数（0.001步长）
+    
+    Args:
+        security: 证券代码，如 '512100.XSHG'
+    
+    Returns:
+        int: 价格精度，2 或 3
+    """
+    info = get_security_info(security)
+    category = str(info.get('category') or '').lower()
+    if category in ('fund', 'money_market_fund'):
+        return 3
+    return 2
+
+
 __all__ = [
     'get_price', 'attribute_history', 'get_current_data',
     'get_trade_days', 'get_all_securities', 'get_index_stocks',
     'set_current_context', 'set_data_provider', 'get_data_provider',
     'set_security_overrides', 'reset_security_overrides',
+    'get_tick_decimals',
 ]
 
 

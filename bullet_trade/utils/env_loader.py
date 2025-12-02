@@ -215,13 +215,19 @@ def get_system_config() -> dict:
     获取系统配置
     
     Returns:
-        配置字典
+        配置字典，包含：
+        - log_level: 控制台日志级别（默认 INFO）
+        - log_file_level: 文件日志级别（默认跟随 log_level）
     """
+    log_level = get_env('LOG_LEVEL', 'INFO')
+    # LOG_FILE_LEVEL 未设置时，跟随 LOG_LEVEL
+    log_file_level = get_env('LOG_FILE_LEVEL') or log_level
     return {
         'cache_ttl_days': get_env_int('CACHE_TTL_DAYS', 30),
         'backtest_output_dir': get_env('BACKTEST_OUTPUT_DIR', './backtest_results'),
         'log_dir': get_env('LOG_DIR', './logs'),
-        'log_level': get_env('LOG_LEVEL', 'INFO'),
+        'log_level': log_level,
+        'log_file_level': log_file_level,
         'max_workers': get_env_int('MAX_WORKERS') or None,
         'debug': get_env_bool('DEBUG', False),
     }

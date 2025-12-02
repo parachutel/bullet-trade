@@ -303,16 +303,110 @@ def _compute_trade_win_stats(trades: List[Dict[str, Any]]) -> Dict[str, float]:
     }
 
 
+def _compute_trade_profit_loss_ratio(trades: List[Dict[str, Any]]) -> float:
+    """
+    计算基于交易的盈亏比（聚宽公式：总盈利额 / 总亏损额）。
+    
+    按卖出成交计算每笔交易的盈亏，汇总后计算比率。
+    """
+    # 统一访问器
+    def _ga(obj, key, default=None):
+        try:
+            return getattr(obj, key)
+        except Exception:
+            return obj.get(key, default) if isinstance(obj, dict) else default
+
+    def _normalize_trade_time(value):
+        if value is None:
+            return None
+        if isinstance(value, pd.Timestamp):
+            return value.isoformat()
+        if isinstance(value, datetime):
+            return value.isoformat(sep=' ')
+        try:
+            ts = pd.to_datetime(value, errors='coerce')
+        except Exception:
+            return str(value)
+        if pd.isna(ts):
+            return str(value)
+        return ts.isoformat()
+
+    # 排序确保时间顺序
+    enumerated_trades = list(enumerate(trades or []))
+
+    def _sort_key(item):
+        idx, trade = item
+        normalized = _normalize_trade_time(_ga(trade, 'time'))
+        return (normalized is None, normalized or '', idx)
+
+    enumerated_trades.sort(key=_sort_key)
+    sorted_trades = [trade for _, trade in enumerated_trades]
+    
+    # 按标的维护仓位均价
+    state: Dict[str, Dict[str, float]] = {}
+    def st(code: str):
+        if code not in state:
+            state[code] = {'qty': 0.0, 'avg': 0.0}
+        return state[code]
+
+    total_profit = 0.0  # 总盈利额
+    total_loss = 0.0    # 总亏损额（绝对值）
+    
+    for t in sorted_trades:
+        code = _ga(t, 'security')
+        if not code:
+            continue
+        s = st(code)
+        amt = float(_ga(t, 'amount', 0) or 0)
+        price = float(_ga(t, 'price', 0) or 0)
+        commission = float(_ga(t, 'commission', 0) or 0)
+        tax = float(_ga(t, 'tax', 0) or 0)
+        
+        if amt > 0:
+            # 买入：更新加权平均成本
+            total_cost = s['avg'] * s['qty'] + price * amt
+            s['qty'] = s['qty'] + amt
+            s['avg'] = (total_cost / s['qty']) if s['qty'] > 0 else 0.0
+        elif amt < 0:
+            # 卖出：计算盈亏
+            sell_qty = abs(amt)
+            # 盈亏 = (卖出价 - 成本价) * 数量 - 手续费 - 印花税
+            pnl = (price - s['avg']) * sell_qty - commission - tax
+            if pnl > 0:
+                total_profit += pnl
+            else:
+                total_loss += abs(pnl)
+            s['qty'] = max(0.0, s['qty'] - sell_qty)
+    
+    # 盈亏比 = 总盈利额 / 总亏损额
+    if total_loss > 1e-12:
+        return total_profit / total_loss
+    elif total_profit > 1e-12:
+        return float('inf')  # 只盈利无亏损
+    else:
+        return 0.0
+
+
 def calculate_metrics(results: Dict[str, Any]) -> Dict[str, float]:
     """
-    计算详细的风险指标
+    计算详细的风险指标（与聚宽兼容）
+    
+    公式参考聚宽官方文档：
+    - 无风险利率：默认 4%（与聚宽一致）
+    - 夏普比率 = (年化收益 - 无风险利率) / 年化波动率
+    - 索提诺比率 = (年化收益 - 无风险利率) / 下行波动率
+    - 下行波动率：使用聚宽动态目标公式
+    - 盈亏比 = 总盈利额 / 总亏损额（基于交易）
     
     Args:
         results: 回测结果字典
         
     Returns:
-        指标字典
+        指标字典（数值已四舍五入：百分比2位，比率4位）
     """
+    # 无风险利率（与聚宽一致，默认 4%）
+    RISK_FREE_RATE = 0.04
+    
     df = results['daily_records']
     
     # 检查是否有数据
@@ -346,21 +440,33 @@ def calculate_metrics(results: Dict[str, Any]) -> Dict[str, float]:
         base = None
     if not base or base <= 0:
         base = float(df['total_value'].iloc[0])
+    
+    # 策略收益（百分比）
     total_returns = (df['total_value'].iloc[-1] / base - 1) * 100
     trading_days = len(df)
-    years = trading_days / 250
+    years = trading_days / 250.0
     
-    # 年化收益
-    annual_returns = (pow(df['total_value'].iloc[-1] / base, 1/years) - 1) * 100 if years > 0 else 0
+    # 年化收益（聚宽公式：((1+P)^(250/n) - 1) * 100%）
+    if years > 0:
+        annual_returns = (pow(df['total_value'].iloc[-1] / base, 1/years) - 1) * 100
+    else:
+        annual_returns = 0.0
     
-    # 波动率
+    # 日收益率序列（小数形式）
     daily_returns = df['daily_returns'].dropna()
-    volatility = daily_returns.std() * np.sqrt(250) * 100
+    n = len(daily_returns)
     
-    # 最大回撤
+    # 策略波动率（聚宽公式：sqrt(250/(n-1) * Σ(rp - rp_avg)^2)）
+    # pandas std() 默认 ddof=1，等价于聚宽公式
+    if n > 1:
+        volatility = daily_returns.std() * np.sqrt(250) * 100  # 转为百分比
+    else:
+        volatility = 0.0
+    
+    # 最大回撤（聚宽公式：Max((Px - Py) / Px)，y > x）
     cummax = df['total_value'].expanding().max()
-    drawdown = (df['total_value'] - cummax) / cummax * 100
-    max_drawdown = drawdown.min()
+    drawdown = (df['total_value'] - cummax) / cummax * 100  # 百分比
+    max_drawdown = float(drawdown.min())
     
     # 计算最大回撤区间（峰到谷）
     max_dd_interval = '未知'
@@ -388,54 +494,101 @@ def calculate_metrics(results: Dict[str, Any]) -> Dict[str, float]:
         else:
             current_dd = 0
     
-    # 夏普比率
-    risk_free_rate = 0.03 / 250
-    excess_returns = daily_returns - risk_free_rate
-    sharpe_ratio = np.sqrt(250) * excess_returns.mean() / excess_returns.std() if excess_returns.std() > 0 else 0
+    # ========== 夏普比率（聚宽公式）==========
+    # Sharpe = (Rp - Rf) / σp
+    # Rp = 策略年化收益率（小数），Rf = 无风险利率（0.04），σp = 年化波动率（小数）
+    if volatility > 0:
+        sharpe_ratio = (annual_returns / 100.0 - RISK_FREE_RATE) / (volatility / 100.0)
+    else:
+        sharpe_ratio = 0.0
     
-    # 索提诺比率（下行风险）
-    downside_returns = daily_returns[daily_returns < 0]
-    downside_std = downside_returns.std() if len(downside_returns) > 0 else 0
-    sortino_ratio = np.sqrt(250) * excess_returns.mean() / downside_std if downside_std > 0 else 0
+    # ========== 下行波动率（聚宽公式）==========
+    # σpd = sqrt(250/n * Σ(rp - rpi_avg)^2 * f(t))
+    # 其中 rpi_avg = 截至第i日的平均收益率，f(t) = 1 if rp < rpi_avg else 0
+    if n > 0:
+        downside_sq_sum = 0.0
+        cumsum = 0.0
+        for i, rp in enumerate(daily_returns.values):
+            cumsum += rp
+            rpi_avg = cumsum / (i + 1)  # 截至第i日的平均收益率
+            if rp < rpi_avg:
+                downside_sq_sum += (rp - rpi_avg) ** 2
+        downside_volatility = np.sqrt(250.0 / n * downside_sq_sum) * 100  # 转为百分比
+    else:
+        downside_volatility = 0.0
     
-    # 日胜率（基于 daily_returns）
-    winning_days = (daily_returns > 0).sum()
-    losing_days = (daily_returns < 0).sum()
-    win_rate_daily = winning_days / len(daily_returns) * 100 if len(daily_returns) > 0 else 0
+    # ========== 索提诺比率（聚宽公式）==========
+    # Sortino = (Rp - Rf) / σpd
+    if downside_volatility > 0:
+        sortino_ratio = (annual_returns / 100.0 - RISK_FREE_RATE) / (downside_volatility / 100.0)
+    else:
+        sortino_ratio = 0.0
     
-    # 盈亏比
-    avg_win = daily_returns[daily_returns > 0].mean() if winning_days > 0 else 0
-    avg_loss = abs(daily_returns[daily_returns < 0].mean()) if losing_days > 0 else 0
-    profit_loss_ratio = avg_win / avg_loss if avg_loss > 0 else 0
+    # 日胜率（基于 daily_returns > 0）
+    winning_days = int((daily_returns > 0).sum())
+    losing_days = int((daily_returns < 0).sum())
+    win_rate_daily = winning_days / n * 100 if n > 0 else 0.0
     
-    # Calmar比率
-    calmar_ratio = annual_returns / abs(max_drawdown) if max_drawdown < 0 else 0
+    # ========== 盈亏比（聚宽公式：总盈利额 / 总亏损额）==========
+    # 基于交易记录计算，而非日收益
+    trades = results.get('trades', [])
+    total_profit = 0.0
+    total_loss = 0.0
+    for t in trades:
+        # 兼容对象与字典格式
+        if isinstance(t, dict):
+            amt = float(t.get('amount') or t.get('数量') or 0)
+            price = float(t.get('price') or t.get('价格') or 0)
+            commission = float(t.get('commission') or t.get('手续费') or 0)
+            tax = float(t.get('tax') or t.get('印花税') or 0)
+        else:
+            amt = float(getattr(t, 'amount', 0) or 0)
+            price = float(getattr(t, 'price', 0) or 0)
+            commission = float(getattr(t, 'commission', 0) or 0)
+            tax = float(getattr(t, 'tax', 0) or 0)
+        
+        if amt < 0:  # 卖出交易
+            # 简化计算：卖出金额 - 费用（实际盈亏需要成本，这里用交易金额近似）
+            trade_value = abs(amt) * price - commission - tax
+            # 注：精确盈亏需要成本价，这里用 _compute_trade_win_stats 的逻辑
     
-    # 交易胜率（基于卖出成交回合）
-    trade_stats = _compute_trade_win_stats(results.get('trades', []))
+    # 使用 _compute_trade_win_stats 计算精确的盈亏比
+    trade_stats = _compute_trade_win_stats(trades)
+    
+    # 计算基于交易的盈亏比（总盈利额 / 总亏损额）
+    profit_loss_ratio = _compute_trade_profit_loss_ratio(trades)
+    
+    # Calmar比率 = 年化收益 / |最大回撤|
+    if max_drawdown < 0:
+        calmar_ratio = annual_returns / abs(max_drawdown)
+    else:
+        calmar_ratio = 0.0
 
+    # ========== 四舍五入：百分比保留2位，比率保留4位 ==========
     metrics = {
-        '策略收益': total_returns,
-        '策略年化收益': annual_returns,
-        '策略波动率': volatility,
-        '最大回撤': max_drawdown,
+        '策略收益': round(total_returns, 2),
+        '策略年化收益': round(annual_returns, 2),
+        '策略波动率': round(volatility, 2),
+        '最大回撤': round(max_drawdown, 2),
         '最大回撤区间': max_dd_interval,
         '最大回撤持续天数': dd_duration,
-        '夏普比率': sharpe_ratio,
-        '索提诺比率': sortino_ratio,
-        'Calmar比率': calmar_ratio,
-        '日胜率': win_rate_daily,
-        '日盈利天数': int(winning_days),
-        '日亏损天数': int(losing_days),
-        '交易胜率': float(trade_stats['交易胜率']),
+        '夏普比率': round(sharpe_ratio, 4),
+        '索提诺比率': round(sortino_ratio, 4),
+        'Calmar比率': round(calmar_ratio, 4),
+        '下行波动率': round(downside_volatility, 2),
+        '日胜率': round(win_rate_daily, 2),
+        '日盈利天数': winning_days,
+        '日亏损天数': losing_days,
+        '交易胜率': round(float(trade_stats['交易胜率']), 2),
         '交易盈利次数': int(trade_stats['交易盈利次数']),
         '交易亏损次数': int(trade_stats['交易亏损次数']),
-        '盈亏比': profit_loss_ratio,
+        '盈亏比': round(profit_loss_ratio, 4),
         '交易天数': trading_days,
     }
-    # 兼容旧口径：保留“胜率”为日胜率
-    # 并提供“交易胜率”解释（无卖出则为0）
-    metrics['胜率'] = float(trade_stats['交易胜率'])
+    # 兼容旧口径：保留"胜率"字段
+    metrics['胜率'] = round(float(trade_stats['交易胜率']), 2)
+    # 添加收益回撤比（等同Calmar比率，方便排序）
+    metrics['收益回撤比'] = round(calmar_ratio, 4)
     
     return metrics
 
@@ -1807,7 +1960,8 @@ def generate_html_report(results: Dict[str, Any] = None, output_file: Optional[s
                      mv = float(r.get('value') or 0.0)
                      pnl = float(r.get('floating_pnl') or 0.0)
                      pnl_cls = 'neg' if pnl < 0 else 'pos'
-                     rows.append(f"<tr><td>{label}</td><td class='num'>{amount}</td><td class='num'>{price_val:.2f}</td><td class='num'>{mv:,.2f}</td><td class='num {pnl_cls}'>{pnl:,.2f}</td></tr>")
+                     # 价格统一使用3位小数精度（ETF为0.001步长）
+                     rows.append(f"<tr><td>{label}</td><td class='num'>{amount}</td><td class='num'>{price_val:.3f}</td><td class='num'>{mv:,.2f}</td><td class='num {pnl_cls}'>{pnl:,.2f}</td></tr>")
                  total_mv = cash_val + mv_sum
                  pnl_cls_sum = 'neg' if pnl_sum < 0 else 'pos'
                  table = "<table class='table'><thead><tr><th>标的</th><th>数量</th><th>价格</th><th>市值</th><th>盈亏</th></tr></thead><tbody>" + "".join(rows) + "</tbody></table>"

@@ -404,6 +404,12 @@ class MiniQMTProvider(DataProvider):
         else:
             df = raw_df
 
+        # 兼容 JQData 的 skip_paused=False 行为：填充停牌日数据
+        # QMT 不返回停牌日的数据，但 JQData 会返回（volume=0, paused=1）
+        # 当 skip_paused=False 且有 end_date 时，检查是否需要填充停牌日
+        if not skip_paused and end_date and period == "1d" and not df.empty:
+            df = self._fill_paused_days(df, start_date, end_date, xt)
+
         if skip_paused:
             df = df[df.get("volume", 0) > 0]
 
@@ -417,6 +423,143 @@ class MiniQMTProvider(DataProvider):
             df = df[fields]
 
         return df
+
+    def _fill_paused_days(
+        self,
+        df: pd.DataFrame,
+        start_date: Optional[Union[str, datetime]],
+        end_date: Optional[Union[str, datetime]],
+        xt,
+    ) -> pd.DataFrame:
+        """
+        填充停牌日数据，使 QMT 行为与 JQData 的 skip_paused=False 一致。
+        
+        QMT 的 get_local_data 不返回停牌日的数据，但 JQData 会返回（volume=0, paused=1）。
+        此方法检查日期范围内缺失的交易日，并用前一天的收盘价填充。
+        """
+        if df.empty:
+            return df
+        
+        try:
+            # 使用 df 的实际日期范围，而不是传入的 start_date/end_date
+            # 因为传入的 end_date 可能被 _fetch_local_data 往后推了
+            df_min_date = df.index.min()
+            df_max_date = df.index.max()
+            
+            # 转换为日期对象
+            if hasattr(df_min_date, 'date'):
+                actual_start = df_min_date.date()
+            elif hasattr(df_min_date, 'to_pydatetime'):
+                actual_start = df_min_date.to_pydatetime().date()
+            else:
+                actual_start = df_min_date
+                
+            if hasattr(df_max_date, 'date'):
+                actual_end = df_max_date.date()
+            elif hasattr(df_max_date, 'to_pydatetime'):
+                actual_end = df_max_date.to_pydatetime().date()
+            else:
+                actual_end = df_max_date
+            
+            # 如果有 end_date 参数，使用它作为实际结束日期（确保包含请求的 end_date）
+            if end_date:
+                try:
+                    req_end = pd.to_datetime(end_date).date()
+                    # 只在 req_end 在合理范围内时使用（不能是未来的日期）
+                    from datetime import date as Date
+                    today = Date.today()
+                    if req_end <= today and req_end >= actual_start:
+                        actual_end = max(actual_end, req_end)
+                except Exception:
+                    pass
+            
+            # 获取日期范围内的所有交易日
+            start_str = self._format_time(actual_start, "1d")
+            end_str = self._format_time(actual_end, "1d")
+            
+            logger.debug(f"QMT _fill_paused_days: 查询交易日范围 {start_str} - {end_str}")
+            
+            trade_days_ts = xt.get_trading_dates(
+                self.market, 
+                start_time=start_str, 
+                end_time=end_str, 
+                count=-1
+            )
+            if not trade_days_ts:
+                return df
+            
+            # 转换为日期集合
+            from datetime import datetime as dt
+            trade_days = set()
+            for ts in trade_days_ts:
+                d = dt.fromtimestamp(ts / 1000.0).date()
+                trade_days.add(d)
+            
+            # 获取 df 中已有的日期
+            existing_dates = set()
+            for idx in df.index:
+                if hasattr(idx, 'date'):
+                    existing_dates.add(idx.date())
+                elif hasattr(idx, 'to_pydatetime'):
+                    existing_dates.add(idx.to_pydatetime().date())
+            
+            # 找出缺失的交易日（停牌日）
+            missing_dates = trade_days - existing_dates
+            if not missing_dates:
+                return df
+            
+            logger.debug(f"QMT _fill_paused_days: 发现 {len(missing_dates)} 个停牌日需要填充: {sorted(missing_dates)}")
+            
+            # 为缺失的日期创建填充行
+            fill_rows = []
+            for missing_date in sorted(missing_dates):
+                # 找到该日期之前最近的数据行作为参考
+                ref_row = None
+                missing_ts = pd.Timestamp(missing_date)
+                earlier_rows = df[df.index < missing_ts]
+                if not earlier_rows.empty:
+                    ref_row = earlier_rows.iloc[-1]
+                elif not df.empty:
+                    # 如果没有更早的数据，用第一行作为参考
+                    ref_row = df.iloc[0]
+                
+                if ref_row is not None:
+                    # 创建停牌日数据行
+                    fill_data = {}
+                    close_price = ref_row.get('close', 0.0)
+                    for col in df.columns:
+                        if col in ('open', 'high', 'low', 'close'):
+                            fill_data[col] = close_price
+                        elif col == 'volume':
+                            fill_data[col] = 0.0
+                        elif col == 'money':
+                            fill_data[col] = 0.0
+                        elif col == 'paused':
+                            fill_data[col] = 1.0  # 标记为停牌
+                        else:
+                            fill_data[col] = 0.0
+                    
+                    fill_rows.append((pd.Timestamp(missing_date).normalize(), fill_data))
+            
+            if fill_rows:
+                # 添加 paused 列（如果不存在）
+                if 'paused' not in df.columns:
+                    df = df.copy()
+                    df['paused'] = 0.0
+                
+                # 创建填充 DataFrame 并合并
+                fill_df = pd.DataFrame(
+                    [row[1] for row in fill_rows],
+                    index=[row[0] for row in fill_rows]
+                )
+                df = pd.concat([df, fill_df]).sort_index()
+                logger.debug(f"QMT _fill_paused_days: 填充后 df.index={df.index.tolist()[-5:] if len(df) > 5 else df.index.tolist()}")
+            
+            return df
+            
+        except Exception as e:
+            logger.debug(f"QMT _fill_paused_days: 填充失败 {e}")
+            return df
 
     @staticmethod
     def _round_price_columns(df: pd.DataFrame, decimals: int) -> pd.DataFrame:
@@ -471,11 +614,48 @@ class MiniQMTProvider(DataProvider):
         count: Optional[int],
         dividend_type: str,
     ) -> pd.DataFrame:
+        # 注意：QMT 的 get_local_data 在使用 count 参数时会跳过停牌日，
+        # 导致与 JQData 行为不一致（JQData 会包含停牌日的数据）。
+        # 
+        # 解决方案：当同时指定 end_time 和 count 时，不传 count 给 QMT，
+        # 而是先获取到 end_time 的完整数据，再用 tail(count) 截取。
+        # 这样可以确保停牌日的数据也被包含在内。
+        use_count_in_xt = count
+        use_start_time = start_time
+        
+        use_end_time = end_time
+        
+        if end_time and count and not start_time:
+            # 当没有 start_time 但有 end_time 和 count 时，
+            # 需要构造一个合理的 start_time，否则 QMT 不知道从哪开始获取
+            # 往前推 count + 30 天作为 start_time（多取一些以覆盖停牌等情况）
+            # 同时将 end_time 往后推几天，因为 QMT 在 end_time 是停牌日时不返回该天数据
+            try:
+                end_dt = pd.to_datetime(end_time)
+                buffer_days = max(count * 2, 30)  # 取 count*2 和 30 的较大值
+                start_dt = end_dt - pd.Timedelta(days=buffer_days)
+                use_start_time = start_dt.strftime("%Y%m%d")
+                # 将 end_time 往后推 10 天，确保停牌日也能被包含（QMT 行为不一致，需要更大的缓冲）
+                use_end_time = (end_dt + pd.Timedelta(days=10)).strftime("%Y%m%d")
+                use_count_in_xt = -1  # 不让 QMT 处理 count
+                logger.debug(f"QMT _fetch_local_data: 构造 start_time={use_start_time}, end_time={use_end_time}(原{end_time}), count={count}")
+            except Exception:
+                pass
+        elif end_time and count:
+            # 有 start_time 的情况，也不让 QMT 处理 count
+            # 同样需要将 end_time 往后推
+            try:
+                end_dt = pd.to_datetime(end_time)
+                use_end_time = (end_dt + pd.Timedelta(days=10)).strftime("%Y%m%d")
+                use_count_in_xt = -1
+            except Exception:
+                pass
+        
         data = xt.get_local_data(
             stock_list=[security],
-            count=count or -1,
+            count=use_count_in_xt or -1,
             period=period,
-            start_time=start_time,
+            start_time=use_start_time,
             end_time=end_time,
             dividend_type=dividend_type,
         )
@@ -493,6 +673,27 @@ class MiniQMTProvider(DataProvider):
         df.index.name = None
         df.rename(columns={"amount": "money"}, inplace=True)
         df["money"] = df.get("money", 0.0)
+        
+        # 在这里处理 count，确保停牌日数据也被包含
+        if end_time and count and not df.empty:
+            logger.debug(f"QMT _fetch_local_data: 截取前 df.index={df.index.tolist()[-5:] if len(df) > 5 else df.index.tolist()}")
+            # 先过滤掉超过原始 end_time 的数据（因为我们把 end_time 往后推了）
+            try:
+                end_dt = pd.to_datetime(end_time)
+                if period == "1d":
+                    # 日线数据，index 已经 normalize 为当天 00:00:00
+                    # 需要包含 end_time 当天的数据，所以用 <= end_dt.normalize()
+                    end_dt_normalized = end_dt.normalize()
+                    df = df[df.index <= end_dt_normalized]
+                else:
+                    df = df[df.index <= end_dt]
+                logger.debug(f"QMT _fetch_local_data: 过滤后 df.index={df.index.tolist()[-5:] if len(df) > 5 else df.index.tolist()}")
+            except Exception as e:
+                logger.debug(f"QMT _fetch_local_data: 过滤失败 {e}")
+            # 然后再 tail(count)
+            df = df.tail(count)
+            logger.debug(f"QMT _fetch_local_data: 截取后 df.index={df.index.tolist()}")
+        
         return df
 
     @classmethod

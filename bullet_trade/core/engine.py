@@ -110,6 +110,7 @@ class BacktestEngine:
         self.daily_records = []  # 每日记录
         self.trades = []  # 所有交易记录
         self.events = []  # 事件记录（分红/拆分）
+        self._processed_dividend_keys = set()  # 已处理的分红事件键（避免重复处理）
         self.benchmark_data = None  # 基准数据
         # 新增：每日持仓快照记录
         self.daily_positions = []
@@ -595,7 +596,7 @@ class BacktestEngine:
         return self._generate_results()
     
     def _setup_log_file(self):
-        """设置日志文件处理器"""
+        """设置日志文件处理器，级别由 LOG_FILE_LEVEL 环境变量控制"""
         try:
             import logging
             from pathlib import Path
@@ -604,13 +605,22 @@ class BacktestEngine:
             log_path = Path(self.log_file)
             log_path.parent.mkdir(parents=True, exist_ok=True)
             
+            # 读取文件日志级别配置（LOG_FILE_LEVEL，未设置则跟随 LOG_LEVEL）
+            try:
+                from bullet_trade.utils.env_loader import get_system_config
+                sys_cfg = get_system_config() or {}
+                file_level_name = str(sys_cfg.get('log_file_level', 'INFO')).upper()
+                file_level = getattr(logging, file_level_name, logging.INFO)
+            except Exception:
+                file_level = logging.INFO
+            
             # 创建文件处理器
             self.file_handler = logging.FileHandler(
                 self.log_file, 
                 mode='w', 
                 encoding='utf-8'
             )
-            self.file_handler.setLevel(logging.INFO)
+            self.file_handler.setLevel(file_level)
             
             # 设置日志格式
             formatter = logging.Formatter(
@@ -619,10 +629,23 @@ class BacktestEngine:
             )
             self.file_handler.setFormatter(formatter)
             
-            # 添加到logger
+            # 确保 logger 主体级别不高于文件级别，否则消息会被过滤
+            if log.logger.level > file_level:
+                log.logger.setLevel(file_level)
+            
+            # 添加到 jq_strategy logger
             log.logger.addHandler(self.file_handler)
             
-            log.info(f"日志将同时输出到文件: {self.log_file}")
+            # 同步到 bullet_trade logger，确保 miniqmt 等模块的日志也写入文件
+            try:
+                std_logger = logging.getLogger("bullet_trade")
+                std_logger.addHandler(self.file_handler)
+                if std_logger.level > file_level:
+                    std_logger.setLevel(file_level)
+            except Exception:
+                pass
+            
+            log.info(f"日志将同时输出到文件: {self.log_file} (级别: {file_level_name})")
             
         except Exception as e:
             log.warning(f"设置日志文件失败: {e}")
@@ -634,6 +657,13 @@ class BacktestEngine:
                 self.file_handler.flush()
                 self.file_handler.close()
                 log.logger.removeHandler(self.file_handler)
+                # 同时从 bullet_trade logger 移除
+                try:
+                    import logging
+                    std_logger = logging.getLogger("bullet_trade")
+                    std_logger.removeHandler(self.file_handler)
+                except Exception:
+                    pass
                 self.file_handler = None
                 log.info(f"日志已保存至: {self.log_file}")
         except Exception as e:
@@ -733,7 +763,10 @@ class BacktestEngine:
                     log.error(traceback.format_exc())
 
     def _apply_dividends_for_day(self, trade_day: datetime):
-        """开盘前处理当日生效的权益变动（分红、送转/拆分），同步持仓与现金口径。"""
+        """开盘前处理当日生效的权益变动（分红、送转/拆分），同步持仓与现金口径。
+        
+        注意：如果除权日当天停牌，延迟到复牌日再处理（与聚宽行为一致）。
+        """
         portfolio = self.context.portfolio
         if not portfolio.positions:
             return
@@ -742,10 +775,12 @@ class BacktestEngine:
         settings = get_settings()
         tax_rate = settings.options.get('dividend_tax_rate', 0.20)
 
-        # 取当日权益变动事件；若除权除息日期落在非交易日，则顺延到后续首个交易日盘前处理
+        # 取当日权益变动事件；若除权除息日期落在非交易日或停牌日，则顺延到后续首个交易日盘前处理
+        # 注意：需要往前多查几天，以包含因停牌而延迟的分红事件
         current_date = trade_day.date()
         prev_date = getattr(self.context, 'previous_date', None)
-        query_start = current_date if prev_date is None else (prev_date + timedelta(days=1))
+        # 往前查 10 天，以覆盖可能因停牌延迟的分红事件
+        query_start = current_date - timedelta(days=10)
 
         for code, pos in list(portfolio.positions.items()):
             try:
@@ -755,8 +790,39 @@ class BacktestEngine:
 
                 for action in corp_actions:
                     eff_date = action.get('date')
-                    if not self._is_action_effective_today(action, current_date):
+                    split_ratio = float(action.get('scale_factor', 1.0) or 1.0)
+                    gross_div = float(action.get('bonus_pre_tax', 0.0) or 0.0)
+                    
+                    # 生成事件唯一键，用于避免重复处理
+                    event_key = f"{code}_{eff_date}_{split_ratio}_{gross_div}"
+                    if event_key in self._processed_dividend_keys:
+                        log.debug(f"{code} 分红/拆分事件已处理过，跳过: {event_key}")
                         continue
+                    
+                    # 记录完整的分红/拆分事件信息
+                    log.debug(
+                        f"{code} 分红/拆分事件: 除权日={eff_date}, 当前日={current_date}, "
+                        f"拆分比例={split_ratio:.4f}, 派息={gross_div:.4f}, "
+                        f"当前持仓={pos.total_amount}股, 当前价格={pos.price:.4f}"
+                    )
+                    
+                    if not self._is_action_effective_today(action, current_date):
+                        log.debug(f"{code} 分红/拆分事件: 除权日 {eff_date} 未到当日 {current_date}，跳过")
+                        continue
+                    
+                    # 检查除权日当天是否停牌：如果停牌则延迟到复牌日处理
+                    # 使用直接调用 provider 的方式绕过 avoid_future_data 限制
+                    is_paused = self._is_security_paused_on_date(code, eff_date)
+                    log.debug(f"{code} 停牌检测结果: 除权日 {eff_date} 停牌={is_paused}")
+                    
+                    if is_paused:
+                        if eff_date == current_date:
+                            # 除权日就是今天，今天停牌，延迟处理
+                            log.info(f"{code} 在除权日 {current_date} 停牌，除权事件（拆分={split_ratio:.4f}，派息={gross_div:.4f}）延迟到复牌日处理")
+                            continue
+                        else:
+                            # 除权日已过去且停牌，今天是复牌后的第一个处理机会
+                            log.info(f"{code} 除权日 {eff_date} 停牌，今日 {current_date} 执行延迟的除权事件")
 
                     sec_type = action.get('security_type', 'stock')
                     # 内部口径：统一为 split_ratio/gross_div/base_lot
@@ -790,6 +856,10 @@ class BacktestEngine:
                             eff_date=eff_date,
                             portfolio=portfolio,
                         )
+                    
+                    # 记录已处理的分红事件，避免重复处理
+                    self._processed_dividend_keys.add(event_key)
+                    log.debug(f"{code} 分红/拆分事件已处理: {event_key}")
             except Exception as e:
                 log.debug(f"处理分红失败 {code}: {e}")
 
@@ -809,33 +879,36 @@ class BacktestEngine:
 
     @staticmethod
     def _infer_security_category(security: str, info: Dict[str, Any]) -> str:
-        # 优先使用元信息中的显式分类
+        """推断证券分类，用于确定价格精度、交易规则和费用。
+        
+        分类来源优先级（由 get_security_info + security_overrides.json 决定）：
+        1. by_code 显式指定的 category（最高优先级）
+        2. by_prefix 前缀映射的 category
+        3. 数据源返回的 type/subtype
+        4. 默认为 stock
+        
+        Returns:
+            str: 'money_market_fund' | 'fund' | 'stock'
+        """
+        # get_security_info 已合并 security_overrides.json 的配置（by_code > by_prefix）
+        # 所以 info.get('category') 已经是最终结果
         explicit = str(info.get('category') or '').lower()
         if explicit in ('money_market_fund', 'fund', 'stock'):
             return explicit
 
+        # 兼容数据源返回的 type/subtype 字段
         subtype = str(info.get('subtype') or '').lower()
         primary = str(info.get('type') or '').lower()
 
         if subtype in ('mmf', 'money_market_fund'):
             return 'money_market_fund'
-        if primary == 'fund':
+        if primary in ('fund', 'etf'):
+            # jqdatasdk 返回 type='etf'，统一归类为 fund
             return 'fund'
         if primary == 'stock':
             return 'stock'
 
-        code = security.split('.', 1)[0] if security else ''
-        if code.startswith('511'):
-            return 'money_market_fund'
-
-        fund_prefixes = (
-            '159', '160', '161', '162', '163', '164', '165', '166', '167',
-            '168', '169', '500', '501', '502', '503', '504', '505', '506',
-            '507', '508', '509', '510', '512', '513', '515', '516', '517',
-            '518',
-        )
-        if any(code.startswith(prefix) for prefix in fund_prefixes):
-            return 'fund'
+        # 默认视为股票（security_overrides.json 的 by_prefix 已在 get_security_info 中处理）
         return 'stock'
 
     def _calc_trade_price_with_default_slippage(self, price: float, is_buy: bool, security: str) -> float:
@@ -916,6 +989,8 @@ class BacktestEngine:
         positions_value_before = portfolio.positions_value
         cash_before = portfolio.available_cash
         old_amount = pos.total_amount
+        old_price = pos.price
+        old_avg_cost = pos.avg_cost
         old_pos_value = old_amount * pos.price
 
         new_amount = int(round(old_amount * split_ratio))
@@ -935,7 +1010,11 @@ class BacktestEngine:
         total_value_after = cash_after + positions_value_after
 
         log.info(
-            f"{code} 拆分/送转: 生效 {eff_date}, 比例 {split_ratio:.6f}, 股数 {old_amount} -> {new_amount}, 成本口径已调整"
+            f"{code} 拆分/送转: 生效日={eff_date}, 比例={split_ratio:.4f}, "
+            f"股数 {old_amount} -> {new_amount}, "
+            f"价格 {old_price:.4f} -> {pos.price:.4f}, "
+            f"成本 {old_avg_cost:.4f} -> {pos.avg_cost:.4f}, "
+            f"市值 {old_pos_value:.2f} -> {new_pos_value:.2f}"
         )
         self.events.append(
             {
@@ -1117,6 +1196,88 @@ class BacktestEngine:
             return False
         return ev_date <= current_date
 
+    def _is_security_paused_on_date(self, security: str, check_date: datetime.date) -> bool:
+        """检查标的在指定日期是否停牌。
+        
+        用于判断除权日当天是否停牌，如果停牌则需延迟到复牌日处理。
+        
+        兼容 JQData 和 QMT 两种数据源：
+        - JQData: 停牌日有数据，paused=1, volume=0
+        - QMT: 停牌日无数据，返回前一天数据
+        
+        注意：此函数直接调用 provider.get_price，绕过 avoid_future_data 限制，
+        因为停牌状态是元数据，不是策略交易信号。
+        """
+        try:
+            from datetime import timedelta
+            from bullet_trade.data import api as data_api
+            
+            # 直接调用 provider 的 get_price，绕过 api 层的 avoid_future_data 检查
+            # 这是因为停牌判断是元数据，不应受回测模式限制
+            provider = data_api._provider
+            
+            # 获取 check_date 前后的数据
+            start = check_date - timedelta(days=5)
+            end = check_date + timedelta(days=1)  # 多取一天确保包含 check_date
+            
+            df = provider.get_price(
+                security=security,
+                start_date=datetime.combine(start, Time(0, 0)),
+                end_date=datetime.combine(end, Time(15, 0)),
+                frequency='daily',
+                fields=['volume', 'paused'],
+                fq='none',
+                skip_paused=False  # 重要：不跳过停牌日，否则无法判断
+            )
+            
+            if df.empty:
+                log.debug(f"{security} 在 {check_date} 附近无数据")
+                return False  # 无法判断，不阻断
+            
+            # 获取 df 中所有日期
+            dates_in_df = []
+            for idx in df.index:
+                if hasattr(idx, 'date'):
+                    dates_in_df.append(idx.date())
+                elif hasattr(idx, 'to_pydatetime'):
+                    dates_in_df.append(idx.to_pydatetime().date())
+            dates_in_df = sorted(dates_in_df)
+            
+            log.debug(f"{security} 停牌检测: check_date={check_date}, df日期={dates_in_df[-5:] if len(dates_in_df) > 5 else dates_in_df}")
+            
+            # 检查 check_date 是否在数据中
+            if check_date not in dates_in_df:
+                # 数据中没有 check_date（QMT行为），判定为停牌
+                prev_day = check_date - timedelta(days=1)
+                if prev_day in dates_in_df or (dates_in_df and dates_in_df[-1] >= prev_day):
+                    log.debug(f"{security} 在 {check_date} 无数据（数据范围正常），判定为停牌")
+                    return True
+                else:
+                    log.debug(f"{security} 在 {check_date} 无数据，数据范围不足，无法判断")
+                    return False
+            
+            # check_date 在数据中（JQData行为），检查 paused/volume 字段
+            for idx in df.index:
+                idx_date = idx.date() if hasattr(idx, 'date') else idx.to_pydatetime().date()
+                if idx_date == check_date:
+                    row = df.loc[idx]
+                    # 优先使用 paused 字段
+                    if 'paused' in row and pd.notna(row['paused']):
+                        is_paused = bool(row['paused'])
+                        log.debug(f"{security} 在 {check_date} paused={row['paused']}，停牌={is_paused}")
+                        return is_paused
+                    # 其次用成交量判断
+                    if 'volume' in row:
+                        is_paused = float(row['volume'] or 0) == 0
+                        log.debug(f"{security} 在 {check_date} volume={row['volume']}，停牌={is_paused}")
+                        return is_paused
+                    break
+            
+            return False
+        except Exception as e:
+            log.debug(f"检查 {security} 停牌状态失败: {e}")
+            return False  # 获取失败时不阻断处理
+
     def _process_orders(self, current_dt: datetime):
         """处理订单队列"""
         orders = get_order_queue()
@@ -1234,14 +1395,17 @@ class BacktestEngine:
                             trade_price = self._calc_trade_price_with_default_slippage(current_price, is_buy, order.security)
 
                 trade_price = self._round_to_tick(trade_price, order.security, is_buy=None)
+                
+                # 根据证券分类确定价格精度：stock=2位小数，fund/money_market_fund=3位小数
+                price_decimals = 2 if security_category == 'stock' else 3
 
                 if limit_price is not None:
                     if is_buy and trade_price - limit_price > 1e-9:
-                        log.info(f"{order.security} 撮合价 {trade_price:.2f} 超出买入限价 {limit_price:.2f}，取消订单")
+                        log.info(f"{order.security} 撮合价 {trade_price:.{price_decimals}f} 超出买入限价 {limit_price:.{price_decimals}f}，取消订单")
                         order.status = OrderStatus.canceled
                         continue
                     if (not is_buy) and limit_price - trade_price > 1e-9:
-                        log.info(f"{order.security} 撮合价 {trade_price:.2f} 低于卖出限价 {limit_price:.2f}，取消订单")
+                        log.info(f"{order.security} 撮合价 {trade_price:.{price_decimals}f} 低于卖出限价 {limit_price:.{price_decimals}f}，取消订单")
                         order.status = OrderStatus.canceled
                         continue
                 if isinstance(style_obj, MarketOrderStyle) and limit_price is not None and security_category == 'stock':
@@ -1342,7 +1506,7 @@ class BacktestEngine:
                         position.today_buy_t1 = getattr(position, 'today_buy_t1', 0) + trade_amount
                         position.closeable_amount = max(0, position.closeable_amount - trade_amount)
                     position.update_price(current_price)
-                    log.info(f"买入 {order.security}: {trade_amount} 股, 委托价 {fund_check_price:.2f}, 成交价 {trade_price:.2f}, 费用 {commission+tax:.2f}")
+                    log.info(f"买入 {order.security}: {trade_amount} 股, 委托价 {fund_check_price:.{price_decimals}f}, 成交价 {trade_price:.{price_decimals}f}, 费用 {commission+tax:.2f}")
                 else:
                     # 卖出：检查并执行
                     position = self.context.portfolio.positions[order.security]
@@ -1355,7 +1519,7 @@ class BacktestEngine:
                         del self.context.portfolio.positions[order.security]
                     else:
                         position.update_price(current_price)
-                    log.info(f"卖出 {order.security}: {trade_amount} 股, 成交价 {trade_price:.2f}, 费用 {commission+tax:.2f}")
+                    log.info(f"卖出 {order.security}: {trade_amount} 股, 成交价 {trade_price:.{price_decimals}f}, 费用 {commission+tax:.2f}")
                 
                 # 记录交易
                 trade = Trade(

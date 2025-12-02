@@ -9,6 +9,7 @@ try:
 except Exception:
     tabulate = None  # fallback 为 DataFrame.to_string
 
+from ..core.globals import log
 from ..data import api as data_api
 
 
@@ -17,8 +18,17 @@ def _fen(x: float) -> float:
 
 
 def prettytable_print_df(df, headers: str = "keys", show_index: bool = False, max_rows: int = 50) -> None:
+    """
+    以表格形式打印 DataFrame，输出到日志系统。
+
+    Args:
+        df: 要打印的 DataFrame
+        headers: 表头设置，"keys" 使用列名，或传入自定义列表
+        show_index: 是否显示索引列
+        max_rows: 最大显示行数
+    """
     if df is None:
-        print("<empty>")
+        log.info("<empty>")
         return
     try:
         dfx = df.head(max_rows)
@@ -34,9 +44,9 @@ def prettytable_print_df(df, headers: str = "keys", show_index: bool = False, ma
             ["" if val is None else str(val) for val in row]
             for row in dfx.to_numpy().tolist()
         ]
-        print(_format_table(header_list, rows))
+        log.info("\n" + _format_table(header_list, rows))
     except Exception as exc:
-        print(f"prettytable_print_df 失败: {exc}")
+        log.warning(f"prettytable_print_df 失败: {exc}")
 
 
 def _positions_df(context) -> "pd.DataFrame":  # type: ignore
@@ -185,6 +195,9 @@ def _refresh_position_prices(context) -> None:
 def print_portfolio_info(context, top_n: Optional[int] = None, sort_by: str = "value") -> None:
     """
     打印账户概要信息与主要持仓，样式对齐聚宽 CLI。
+
+    输出通过日志系统，同时显示在屏幕和写入日志文件（由全局日志级别控制）。
+
     Args:
         context: 回测或实盘上下文
         top_n: 仅显示前 N 个持仓
@@ -200,13 +213,14 @@ def print_portfolio_info(context, top_n: Optional[int] = None, sort_by: str = "v
     run_type = str(run_params.get("run_type") or "").upper()
     is_live = bool(run_params.get("is_live")) or run_type == "LIVE"
 
+    # 回测模式显示收益概览，实盘模式跳过（实盘有单独的账户快照日志）
     if not is_live:
-        print(f"系统 ==>当前收益：{pnl_pct:.2f}%，当前剩余金额{_fen(cash):,.2f}, 总价值:{_fen(total_value):,.2f}")
-    print("当前持仓:")
+        log.info(f"系统 ==>当前收益：{pnl_pct:.2f}%，当前剩余金额{_fen(cash):,.2f}, 总价值:{_fen(total_value):,.2f}")
+    log.info("当前持仓:")
 
     rows = _position_rows(context, total_value, top_n)
     if not rows:
-        print("(无持仓)")
+        log.info("(无持仓)")
         return
 
     headers = [
@@ -223,7 +237,7 @@ def print_portfolio_info(context, top_n: Optional[int] = None, sort_by: str = "v
         "盈亏率",
         "持仓比",
     ]
-    print(_format_table(headers, rows))
+    log.info("\n" + _format_table(headers, rows))
 
 
 __all__ = [

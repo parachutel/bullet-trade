@@ -9,6 +9,8 @@
 | `DEFAULT_BROKER` | 否 | `qmt` | 默认券商/交易通道（`simulator`/`qmt`/`qmt-remote`） |
 | `DATA_CACHE_DIR` | 否 | `~/.bullet-trade/cache` | 行情缓存根目录，子目录按数据源名自动创建；留空禁用缓存 |
 | `LOG_DIR` | 否 | `logs` | 日志目录 |
+| `LOG_LEVEL` | 否 | `INFO` | 控制台日志级别（`DEBUG`/`INFO`/`WARNING`/`ERROR`） |
+| `LOG_FILE_LEVEL` | 否 | 跟随 `LOG_LEVEL` | 文件日志级别，未设置则与 `LOG_LEVEL` 相同 |
 | `RUNTIME_DIR` | 否 | `runtime` | 运行态/持久化目录（含 g.pkl、live_state.json） |
 
 ## 回测

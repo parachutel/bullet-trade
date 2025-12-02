@@ -1,11 +1,23 @@
 {
-  "by_category": {
-    "money_market_fund": { "tplus": 0, "slippage": 0.0 },
-    "fund": { "tplus": 0, "slippage": 0.00246 },
-    "stock": { "tplus": 1, "slippage": 0.00246 }
+  "_doc": {
+    "功能说明": "证券分类配置，用于确定三个关键属性",
+    "功能1-价格精度": "由 category 决定：stock=2位小数(0.01步长)，fund/money_market_fund=3位小数(0.001步长)",
+    "功能2-T+0交易": "由 tplus 决定：tplus=0 当日可卖(跨境ETF/黄金ETF等)，tplus=1 次日才能卖(普通A股ETF)",
+    "功能3-交易费用": "由 category 决定：money_market_fund=无佣金无滑点，fund=无印花税，stock=有印花税",
+    "优先级": "by_code > by_prefix > by_category，代码级覆盖优先级最高"
   },
+
+  "by_category": {
+    "money_market_fund": { "tplus": 0, "slippage": 0.0, "tick_decimals": 3 },
+    "fund":              { "tplus": 0, "slippage": 0.00246, "tick_decimals": 3 },
+    "stock":             { "tplus": 1, "slippage": 0.00246, "tick_decimals": 2 }
+  },
+
   "by_prefix": {
+    "_comment": "代码前缀 -> 分类映射，用于自动识别证券类型",
+    
     "511": "money_market_fund",
+    
     "159": "fund",
     "160": "fund",
     "161": "fund",
@@ -17,6 +29,7 @@
     "167": "fund",
     "168": "fund",
     "169": "fund",
+    
     "500": "fund",
     "501": "fund",
     "502": "fund",
@@ -33,10 +46,22 @@
     "515": "fund",
     "516": "fund",
     "517": "fund",
-    "518": "fund"
+    "518": "fund",
+    "519": "fund",
+    
+    "560": "fund",
+    "561": "fund",
+    "562": "fund",
+    "563": "fund",
+    
+    "588": "fund"
   },
+
   "by_code": {
+    "_comment": "具体代码级覆盖，优先级最高。主要用于：1.货币基金 2.跨境ETF的T+0 3.黄金ETF的T+0",
+    
     "511880.XSHG": { "name": "银华日利ETF", "category": "money_market_fund", "tplus": 0, "slippage": 0.0 },
+    
     "513030.XSHG": { "name": "德国DAX30ETF", "category": "fund", "tplus": 0 },
     "513050.XSHG": { "name": "中概互联网ETF", "category": "fund", "tplus": 0 },
     "510900.XSHG": { "name": "H股ETF", "category": "fund", "tplus": 0 },
@@ -83,6 +108,7 @@
     "159788.XSHE": { "name": "港股通100ETF", "category": "fund", "tplus": 0 },
     "513900.XSHG": { "name": "恒生互联网科技业ETF", "category": "fund", "tplus": 0 },
     "513320.XSHG": { "name": "恒生新经济ETF", "category": "fund", "tplus": 0 },
+    "513330.XSHG": { "name": "恒生互联网ETF", "category": "fund", "tplus": 0 },
     
     "518680.XSHG": { "name": "华安黄金ETF", "category": "fund", "tplus": 0 },
     "159834.XSHE": { "name": "金ETF", "category": "fund", "tplus": 0 },

@@ -98,26 +98,36 @@ class Logger:
         self._color_enabled = self._detect_color_support()
 
         if not self.logger.handlers:
-            # 控制台
-            sh = logging.StreamHandler()
-            sh.setLevel(logging.INFO)
-            sh.setFormatter(_ColorFormatter('%(asctime)s [%(levelname)s] %(message)s', '%Y-%m-%d %H:%M:%S', self._color_enabled))
-            self.logger.addHandler(sh)
-
-            # 文件（按 .env 配置）
+            # 从环境变量读取日志级别配置
             try:
                 from bullet_trade.utils.env_loader import get_system_config  # type: ignore
                 sys_cfg = get_system_config() or {}
+            except Exception:
+                sys_cfg = {}
+            
+            # 控制台日志级别（LOG_LEVEL）
+            console_level_name = str(sys_cfg.get('log_level', 'INFO')).upper()
+            console_level = getattr(logging, console_level_name, logging.INFO)
+            
+            # 文件日志级别（LOG_FILE_LEVEL，未设置则跟随 LOG_LEVEL）
+            file_level_name = str(sys_cfg.get('log_file_level', console_level_name)).upper()
+            file_level = getattr(logging, file_level_name, console_level)
+            
+            # Logger 主体级别取两者中更低的（以便两个 handler 都能收到消息）
+            self.logger.setLevel(min(console_level, file_level))
+            
+            # 控制台 handler
+            sh = logging.StreamHandler()
+            sh.setLevel(console_level)
+            sh.setFormatter(_ColorFormatter('%(asctime)s [%(levelname)s] %(message)s', '%Y-%m-%d %H:%M:%S', self._color_enabled))
+            self.logger.addHandler(sh)
+
+            # 文件 handler（按 .env 配置）
+            try:
                 log_dir = sys_cfg.get('log_dir') or './logs'
                 os.makedirs(log_dir, exist_ok=True)
                 fh = RotatingFileHandler(os.path.join(log_dir, 'app.log'), maxBytes=5*1024*1024, backupCount=3, encoding='utf-8')
-                # 设置日志级别
-                level_name = str(sys_cfg.get('log_level', 'INFO')).upper()
-                level = getattr(logging, level_name, logging.INFO)
-                self.logger.setLevel(level)
-                for h in self.logger.handlers:
-                    h.setLevel(level)
-                fh.setLevel(level)
+                fh.setLevel(file_level)
                 fh.setFormatter(self._formatter)
                 self.logger.addHandler(fh)
                 self._file_handler = fh
