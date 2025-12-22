@@ -37,12 +37,25 @@ class QmtDataAdapter(RemoteDataAdapter):
         self.provider = MiniQMTProvider(_provider_config())
 
     async def get_history(self, payload: Dict) -> Dict:
+        """
+        获取历史 K 线数据。
+        
+        :param payload: 包含 security, count, start, end, frequency, fq 等参数
+        :return: DataFrame 转换后的 payload 字典
+        """
+        import traceback
+        import logging
+        logger = logging.getLogger(__name__)
+        
         security = payload.get("security")
         count = payload.get("count")
         start = payload.get("start")
         end = payload.get("end")
         frequency = payload.get("frequency") or payload.get("period")
         fq = payload.get("fq")
+        
+        logger.debug(f"[QmtDataAdapter.get_history] 请求参数: security={security}, count={count}, "
+                     f"start={start}, end={end}, frequency={frequency}, fq={fq}")
 
         def _call():
             return self.provider.get_price(
@@ -54,17 +67,47 @@ class QmtDataAdapter(RemoteDataAdapter):
                 fq=fq,
             )
 
-        df = await asyncio.to_thread(_call)
-        return dataframe_to_payload(df)
+        try:
+            df = await asyncio.to_thread(_call)
+            logger.debug(f"[QmtDataAdapter.get_history] 返回数据: shape={df.shape if df is not None else None}, "
+                         f"columns={list(df.columns) if df is not None and hasattr(df, 'columns') else None}")
+            return dataframe_to_payload(df)
+        except KeyError as e:
+            # KeyError 通常表示数据格式问题（如缺少 time 列）
+            error_msg = f"数据格式错误，缺少字段 {e}: security={security}, frequency={frequency}"
+            logger.error(f"[QmtDataAdapter.get_history] {error_msg}\n{traceback.format_exc()}")
+            raise RuntimeError(error_msg) from e
+        except Exception as e:
+            # 捕获所有其他异常并添加上下文信息
+            error_msg = f"获取历史数据失败: {type(e).__name__}: {e} (security={security}, frequency={frequency})"
+            logger.error(f"[QmtDataAdapter.get_history] {error_msg}\n{traceback.format_exc()}")
+            raise RuntimeError(error_msg) from e
 
     async def get_snapshot(self, payload: Dict) -> Dict:
+        """
+        获取实时快照数据。
+        
+        :param payload: 包含 security 参数
+        :return: tick 数据字典
+        """
+        import traceback
+        import logging
+        logger = logging.getLogger(__name__)
+        
         security = payload.get("security")
+        logger.debug(f"[QmtDataAdapter.get_snapshot] 请求参数: security={security}")
 
         def _call():
             return self.provider.get_current_tick(security)
 
-        tick = await asyncio.to_thread(_call)
-        return tick or {}
+        try:
+            tick = await asyncio.to_thread(_call)
+            logger.debug(f"[QmtDataAdapter.get_snapshot] 返回数据: {tick}")
+            return tick or {}
+        except Exception as e:
+            error_msg = f"获取快照数据失败: {type(e).__name__}: {e} (security={security})"
+            logger.error(f"[QmtDataAdapter.get_snapshot] {error_msg}\n{traceback.format_exc()}")
+            raise RuntimeError(error_msg) from e
 
     async def get_live_current(self, payload: Dict) -> Dict:
         """返回实盘快照（含停牌标记）。"""

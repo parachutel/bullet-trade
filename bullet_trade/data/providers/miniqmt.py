@@ -651,19 +651,45 @@ class MiniQMTProvider(DataProvider):
             except Exception:
                 pass
         
-        data = xt.get_local_data(
-            stock_list=[security],
-            count=use_count_in_xt or -1,
-            period=period,
-            start_time=use_start_time,
-            end_time=end_time,
-            dividend_type=dividend_type,
+        logger.debug(
+            f"QMT _fetch_local_data: 调用 xt.get_local_data(stock_list=[{security}], "
+            f"count={use_count_in_xt or -1}, period={period}, "
+            f"start_time={use_start_time}, end_time={end_time}, dividend_type={dividend_type})"
         )
+        try:
+            data = xt.get_local_data(
+                stock_list=[security],
+                count=use_count_in_xt or -1,
+                period=period,
+                start_time=use_start_time,
+                end_time=end_time,
+                dividend_type=dividend_type,
+            )
+        except Exception as e:
+            logger.error(
+                f"QMT _fetch_local_data: xt.get_local_data 调用失败: {type(e).__name__}: {e} "
+                f"(security={security}, period={period}, start_time={use_start_time}, end_time={end_time})"
+            )
+            raise
+        
+        logger.debug(f"QMT _fetch_local_data: xt.get_local_data 返回 data.keys()={list(data.keys()) if data else None}")
+        
         df = data.get(security)
         if df is None or df.empty:
+            logger.debug(f"QMT _fetch_local_data: 返回空 DataFrame (df={df})")
             return pd.DataFrame()
+        
         df = df.copy()
+        logger.debug(f"QMT _fetch_local_data: df.columns={list(df.columns)}, df.shape={df.shape}")
+        
         # xtquant 时间戳为毫秒级 UTC，需要转换到沪深时区（Asia/Shanghai）再处理
+        if "time" not in df.columns:
+            logger.error(
+                f"QMT _fetch_local_data: 数据缺少 'time' 列！"
+                f"现有列: {list(df.columns)}, security={security}, period={period}"
+            )
+            raise KeyError(f"数据缺少 'time' 列 (security={security}, period={period}, columns={list(df.columns)})")
+        
         idx_utc = pd.to_datetime(df["time"].astype("int64"), unit="ms", utc=True)
         idx = pd.DatetimeIndex(idx_utc).tz_convert("Asia/Shanghai").tz_localize(None)
         # Normalize daily bars to date-only index to align with JQData
