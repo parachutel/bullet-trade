@@ -171,6 +171,22 @@ set_data_provider('qmt')
 set_data_provider('tushare')
 ```
 
+## ✅ 数据源对比测试
+
+用于验证不同 provider 的复权口径与数据一致性，建议在准备好账号与本地数据后执行：
+
+- `tests/e2e/data/test_provider_parity.py::test_ping_an_bank_real_parity`  
+  对比 JQData 与 MiniQMT 在分红窗口内的未复权/前复权价格。
+- `tests/e2e/data/test_provider_parity.py::test_tushare_vs_jqdata_single_day`  
+  对比 Tushare 与 JQData 在 `2025-07-01` 的单日复权差异与口径一致性。
+- `tests/e2e/data/test_provider_parity.py::test_multi_provider_single_day_fq_diff`  
+  检查多数据源在同一日期的 `fq=None` 与 `fq=pre` 是否存在差异。
+
+执行前确保：
+- `JQDATA_USERNAME/JQDATA_PASSWORD` 已配置
+- `TUSHARE_TOKEN` 已配置（如使用 Tushare）
+- `QMT_DATA_PATH` 已配置（如使用 QMT）
+
 ## 🎯 代码格式对照表
 
 | 交易所 | 聚宽格式（JQData） | QMT 格式（MiniQMT） | 说明 |

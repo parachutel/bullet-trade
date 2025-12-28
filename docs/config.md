@@ -32,6 +32,15 @@
 | `MINIQMT_AUTO_DOWNLOAD` | 否 | `true` | 自动下载 MiniQMT |
 | `QMT_SESSION_ID` | 否 | `0` | 会话 ID，可选 |
 
+## 下单手数规则（security_overrides.json）
+下单的最小手数与步进规则通过 `bullet_trade/config/security_overrides.json` 的 `lot_rules` 配置统一管理：
+- `default`：默认规则（例如 A 股 100 股/100 股步进）
+- `by_market`：按市场覆盖（北交所 `BJ`，兼容 `.BJ/.BSE`）
+- `by_prefix`：按代码前缀覆盖（如科创板 `68`、可转债 `110/113/118/123/127/128`）
+- `by_code`：单标覆盖
+
+规则匹配时兼容聚宽后缀（`.XSHG/.XSHE`）与 QMT/Tushare 后缀（`.SH/.SZ`、`.BJ/.BSE`）。
+
 ## 风控（实盘）
 | 变量 | 必填 | 示例/默认 | 作用 |
 | --- | --- | --- | --- |

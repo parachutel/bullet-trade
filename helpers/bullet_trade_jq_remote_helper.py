@@ -12,7 +12,7 @@
 
 特点：
 - 每次调用都会重新建立 TCP 连接，适合聚宽频繁重启。
-- 服务端统一处理：100股取整、停牌检查、价格笼子、涨跌停校验、可卖数量检查。
+- 服务端统一处理：最小手数/步进取整、停牌检查、价格笼子、涨跌停校验、可卖数量检查。
 - 支持同步/异步：wait_timeout>0 时轮询订单状态，否则立即返回。
 - 提供 account/positions/order_status/orders/cancel/order_value/order_target 等常见聚宽风格 API。
 """
@@ -125,7 +125,7 @@ class RemoteOrder:
     - security: 证券代码
     - amount: 请求数量
     - price: 请求价格
-    - actual_amount: 服务端实际执行数量（可能因 100 股取整而不同）
+    - actual_amount: 服务端实际执行数量（可能因最小手数/步进取整而不同）
     - actual_price: 服务端实际委托价格（市价单会由服务端计算）
     """
     def __init__(
@@ -202,13 +202,13 @@ class RemoteBrokerClient:
         :param wait_timeout: 等待超时秒数，0 表示异步返回
         :return: 订单 ID
         
-        注意：服务端会自动处理 100 股取整、停牌检查、价格笼子等。
+        注意：服务端会自动处理最小手数/步进取整、停牌检查、价格笼子等。
         """
         if amount == 0:
             return ""
         actual_side = side or ("BUY" if amount > 0 else "SELL")
         qty = abs(int(amount))
-        # 服务端会自动处理 100 股取整
+        # 服务端会自动处理最小手数/步进取整
         order = self._place_order(security, qty, price, actual_side, wait_timeout=wait_timeout)
         return order.order_id
 
@@ -222,7 +222,7 @@ class RemoteBrokerClient:
         :param wait_timeout: 等待超时秒数，0 表示异步返回
         :return: 订单 ID
         
-        注意：服务端会自动处理 100 股取整，实际成交市值可能与请求略有偏差。
+        注意：服务端会自动处理最小手数/步进取整，实际成交市值可能与请求略有偏差。
         """
         if value == 0:
             return ""
@@ -230,7 +230,7 @@ class RemoteBrokerClient:
         p = price or self._infer_price(security)
         if not p:
             raise RuntimeError("无法获取价格，无法按市值下单")
-        # 计算大致数量，服务端会自动按 100 股取整
+        # 计算大致数量，服务端会自动按最小手数/步进取整
         qty = int(abs(value) / p)
         side = "BUY" if value > 0 else "SELL"
         order = self._place_order(security, qty, price, side, wait_timeout=wait_timeout)
@@ -264,12 +264,12 @@ class RemoteBrokerClient:
         :param wait_timeout: 等待超时秒数，0 表示异步返回
         :return: 订单 ID（如果不需要交易则返回空字符串）
         
-        注意：服务端会自动处理 100 股取整，实际市值可能与目标略有偏差。
+        注意：服务端会自动处理最小手数/步进取整，实际市值可能与目标略有偏差。
         """
         p = price or self._infer_price(security)
         if not p:
             raise RuntimeError("无法获取价格，无法按目标市值下单")
-        # 计算目标数量，服务端会自动按 100 股取整
+        # 计算目标数量，服务端会自动按最小手数/步进取整
         target_amount = int(target_value / p)
         return self.order_target(security, target_amount, price=price, wait_timeout=wait_timeout)
 
@@ -337,7 +337,7 @@ class RemoteBrokerClient:
         发送下单请求到服务端。
         
         服务端会统一处理：
-        - 100 股取整
+        - 最小手数/步进取整
         - 停牌检查
         - 市价单价格笼子计算
         - 限价单涨跌停校验
@@ -371,7 +371,7 @@ class RemoteBrokerClient:
         
         # 如果服务端返回了不同的数量，提示用户
         if actual_amount is not None and actual_amount != amount:
-            print(f"[信息] {security} 数量已从 {amount} 调整为 {actual_amount}（100股取整）")
+            print(f"[信息] {security} 数量已从 {amount} 调整为 {actual_amount}（最小手数/步进取整）")
         
         order = RemoteOrder(
             order_id=resp.get("order_id") if isinstance(resp, dict) else None,

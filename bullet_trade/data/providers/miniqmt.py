@@ -935,6 +935,18 @@ class MiniQMTProvider(DataProvider):
                 codes = xt.get_stock_list_in_sector(sector)
                 for code in codes:
                     info = xt.get_instrument_detail(code)
+                    if not info or not isinstance(info, dict):
+                        rows.append(
+                            {
+                                "ts_code": code,
+                                "display_name": code,
+                                "name": code,
+                                "start_date": None,
+                                "end_date": None,
+                                "type": t,
+                            }
+                        )
+                        continue
                     rows.append(
                         {
                             "ts_code": code,

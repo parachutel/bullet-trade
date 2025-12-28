@@ -261,13 +261,25 @@ class TushareProvider(DataProvider):
         factor_df.index = pd.to_datetime(factor_df["trade_date"])
         merged = df.join(factor_df["adj_factor"], how="left")
         merged["adj_factor"] = merged["adj_factor"].ffill().bfill()
-        ref_date = pre_factor_ref_date or end_dt if fq == "pre" else pre_factor_ref_date or start_dt
-        try:
-            ref_date = pd.to_datetime(ref_date)
-        except Exception:
+        ref_date = pre_factor_ref_date
+        if ref_date is None and fq == "pre":
+            ref_date = Date.today()
+        if ref_date is None:
             ref_date = end_dt if fq == "pre" else start_dt
-
-        ref_factor = merged.loc[ref_date, "adj_factor"] if ref_date in merged.index else merged["adj_factor"].iloc[-1]
+        try:
+            ref_dt = pd.to_datetime(ref_date).normalize()
+        except Exception:
+            ref_dt = end_dt if fq == "pre" else start_dt
+        ref_factor = None
+        if ref_dt is not None:
+            if ref_dt in merged.index:
+                ref_factor = merged.loc[ref_dt, "adj_factor"]
+            else:
+                extra_df = self._fetch_adj_factor(security, ref_dt, ref_dt)
+                if not extra_df.empty and "adj_factor" in extra_df.columns:
+                    ref_factor = extra_df["adj_factor"].iloc[-1]
+        if ref_factor is None:
+            ref_factor = merged["adj_factor"].iloc[-1] if fq == "pre" else merged["adj_factor"].iloc[0]
         if fq == "pre":
             ratio = merged["adj_factor"] / ref_factor
         else:
@@ -368,8 +380,15 @@ class TushareProvider(DataProvider):
                     continue
 
                 df["display_name"] = df["name"]
-                df["start_date"] = pd.to_datetime(df.get("list_date") or df.get("found_date"), errors="coerce")
-                df["end_date"] = pd.to_datetime(df.get("delist_date"), errors="coerce")
+                if "list_date" in df.columns:
+                    start_series = df["list_date"]
+                elif "found_date" in df.columns:
+                    start_series = df["found_date"]
+                else:
+                    start_series = pd.Series([None] * len(df))
+                df["start_date"] = pd.to_datetime(start_series, errors="coerce")
+                end_series = df["delist_date"] if "delist_date" in df.columns else pd.Series([None] * len(df))
+                df["end_date"] = pd.to_datetime(end_series, errors="coerce")
                 rows.append(df[["ts_code", "display_name", "name", "start_date", "end_date", "type"]])
 
             if not rows:

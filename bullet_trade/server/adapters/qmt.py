@@ -194,7 +194,7 @@ class QmtBrokerAdapter(RemoteBrokerAdapter):
     QMT 券商适配器，处理远程下单请求。
     
     下单时会进行以下预处理（与 LiveEngine 行为一致）：
-    - 100 股取整（A 股规则）
+    - 最小手数与步进规则取整（按配置）
     - 停牌检查
     - 涨跌停价格校验
     - 市价单价格笼子计算
@@ -270,7 +270,7 @@ class QmtBrokerAdapter(RemoteBrokerAdapter):
         """
         下单接口，统一处理以下逻辑（与 LiveEngine 行为一致）：
         1. 获取实时行情（停牌检查、最新价、涨跌停价）
-        2. 100 股取整
+        2. 最小手数/步进规则取整
         3. 价格校验（限价单在涨跌停范围内）
         4. 市价单价格笼子计算
         5. 卖出时可卖数量检查
@@ -309,19 +309,8 @@ class QmtBrokerAdapter(RemoteBrokerAdapter):
             else:
                 raise ValueError(f"{security} 无法获取有效价格")
         
-        # ========== 2. 100 股取整 ==========
-        lot_size = pricing.infer_lot_size(security)
-        if lot_size > 1:
-            amount = (raw_amount // lot_size) * lot_size
-            if amount != raw_amount:
-                logger.info(f"{security} 数量从 {raw_amount} 取整为 {amount}（手数={lot_size}）")
-        else:
-            amount = raw_amount
-        
-        if amount <= 0:
-            raise ValueError(f"{security} 数量不足一手（原始数量={raw_amount}，手数={lot_size}）")
-        
-        # ========== 3. 卖出时可卖数量检查 ==========
+        # ========== 2. 最小手数与步进取整 ==========
+        closeable = None
         if not is_buy:
             positions = await self.get_positions(account)
             closeable = 0
@@ -331,9 +320,13 @@ class QmtBrokerAdapter(RemoteBrokerAdapter):
                     break
             if closeable <= 0:
                 raise ValueError(f"{security} 无可卖数量")
-            if amount > closeable:
-                logger.warning(f"{security} 可卖数量 {closeable} 小于委托数量 {amount}，调整为 {closeable}")
-                amount = closeable
+
+        amount = pricing.adjust_order_amount(security, raw_amount, is_buy, closeable=closeable)
+        if amount <= 0:
+            min_lot, step = pricing.infer_lot_rule(security)
+            raise ValueError(f"{security} 数量不足最小手数（原始数量={raw_amount}，最小手数={min_lot}，步进={step}）")
+        if amount != raw_amount:
+            logger.info(f"{security} 数量从 {raw_amount} 取整为 {amount}")
         
         # ========== 4. 价格处理 ==========
         price = style.get("price")

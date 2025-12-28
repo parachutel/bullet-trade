@@ -4,7 +4,9 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple, Any
+import json
+import os
+from typing import Optional, Tuple, Any, Dict
 
 
 def _split_security(security: str) -> Tuple[str, str]:
@@ -12,6 +14,125 @@ def _split_security(security: str) -> Tuple[str, str]:
     if len(parts) == 2:
         return parts[0], parts[1].upper()
     return security, ""
+
+
+_LOT_RULES_LOADED = False
+_LOT_RULES: Dict[str, Any] = {}
+
+
+def _config_base_dir() -> str:
+    return os.path.dirname(os.path.dirname(__file__))
+
+
+def _lot_rules_path() -> str:
+    return os.path.join(_config_base_dir(), "config", "security_overrides.json")
+
+
+def _load_lot_rules_if_needed() -> None:
+    global _LOT_RULES_LOADED, _LOT_RULES
+    if _LOT_RULES_LOADED:
+        return
+    path = _lot_rules_path()
+    try:
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    _LOT_RULES = data.get("lot_rules") or {}
+    except Exception:
+        _LOT_RULES = {}
+    finally:
+        _LOT_RULES_LOADED = True
+
+
+def _normalize_market(market: str) -> str:
+    upper = (market or "").upper()
+    if upper in ("XSHG", "SH"):
+        return "SH"
+    if upper in ("XSHE", "SZ"):
+        return "SZ"
+    if upper in ("BJ", "BSE"):
+        return "BJ"
+    return upper
+
+
+def _candidate_codes(code: str, market: str, raw: str) -> Tuple[str, ...]:
+    candidates = []
+    if raw:
+        candidates.append(raw)
+    if not code or not market:
+        return tuple(candidates)
+    if market == "SH":
+        candidates.extend([f"{code}.XSHG", f"{code}.SH"])
+    elif market == "SZ":
+        candidates.extend([f"{code}.XSHE", f"{code}.SZ"])
+    elif market == "BJ":
+        candidates.extend([f"{code}.BJ", f"{code}.BSE"])
+    return tuple(dict.fromkeys(candidates))
+
+
+def _pick_lot_rule(security: str) -> Dict[str, Any]:
+    _load_lot_rules_if_needed()
+    rules = _LOT_RULES if isinstance(_LOT_RULES, dict) else {}
+    if not rules:
+        return {"min_lot": 100, "step": 100}
+    by_code = rules.get("by_code") or {}
+    by_prefix = rules.get("by_prefix") or {}
+    by_market = rules.get("by_market") or {}
+    default = rules.get("default") or {"min_lot": 100, "step": 100}
+
+    code, market_raw = _split_security(security)
+    market = _normalize_market(market_raw)
+    if isinstance(by_code, dict):
+        for candidate in _candidate_codes(code, market, security):
+            item = by_code.get(candidate)
+            if isinstance(item, dict):
+                return item
+    if isinstance(by_prefix, dict):
+        for prefix, item in by_prefix.items():
+            if code.startswith(prefix) and isinstance(item, dict):
+                return item
+    if isinstance(by_market, dict):
+        item = by_market.get(market)
+        if isinstance(item, dict):
+            return item
+    return default if isinstance(default, dict) else {"min_lot": 100, "step": 100}
+
+
+def infer_lot_rule(security: str) -> Tuple[int, int]:
+    rule = _pick_lot_rule(security)
+    min_lot = int(rule.get("min_lot") or 0)
+    step = int(rule.get("step") or 0)
+    if min_lot <= 0:
+        min_lot = 1
+    if step <= 0:
+        step = min_lot
+    return min_lot, step
+
+
+def adjust_order_amount(
+    security: str,
+    amount: int,
+    is_buy: bool,
+    closeable: Optional[int] = None,
+) -> int:
+    raw = int(amount or 0)
+    if raw <= 0:
+        return 0
+    min_lot, step = infer_lot_rule(security)
+    if is_buy:
+        adjusted = (raw // step) * step
+        return adjusted if adjusted >= min_lot else 0
+    if closeable is not None:
+        closeable = int(closeable)
+        if closeable < min_lot:
+            return min(raw, closeable)
+    adjusted = (raw // step) * step
+    if adjusted < min_lot:
+        return 0
+    if closeable is not None:
+        return min(adjusted, closeable)
+    return adjusted
 
 
 def is_etf(security: str) -> bool:
@@ -22,14 +143,8 @@ def is_etf(security: str) -> bool:
 
 
 def infer_lot_size(security: str) -> int:
-    code, market = _split_security(security)
-    if market in ("XSHG", "SH", "XSHE", "SZ"):
-        # 绝大部分沪深股票/ETF 以 100 股为一手
-        return 100
-    if market in ("BJ", "BSE"):
-        return 100
-    # 其他市场（如期货/基金）默认按 1 手
-    return 1
+    min_lot, _ = infer_lot_rule(security)
+    return min_lot
 
 
 def get_min_price_step(security: str, price: float) -> float:

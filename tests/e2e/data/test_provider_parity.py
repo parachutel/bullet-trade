@@ -7,6 +7,9 @@ import pytest
 
 from bullet_trade.data.providers.jqdata import JQDataProvider
 from bullet_trade.data.providers.miniqmt import MiniQMTProvider
+from bullet_trade.data.providers.tushare import TushareProvider
+from bullet_trade.data import api as data_api
+from bullet_trade.data.api import get_price, set_data_provider
 from bullet_trade.utils.env_loader import load_env
 
 pytestmark = [
@@ -79,6 +82,37 @@ def _check_prerequisites() -> None:
             f"{MINIQMT_AUTO_DOWNLOAD_ENV} 当前为关闭状态（{auto_download}），"
             "请在 .env 中设置 MINIQMT_AUTO_DOWNLOAD=true 以自动补齐缺失行情。"
         )
+
+
+def _check_tushare_prerequisites() -> None:
+    _ensure_module("tushare", "pip install tushare")
+    if not os.getenv("TUSHARE_TOKEN"):
+        pytest.skip("缺少必要的环境变量：TUSHARE_TOKEN，请在 .env 中配置后重试。")
+
+
+def _authenticate_tushare() -> TushareProvider:
+    provider = TushareProvider()
+    try:
+        provider.auth()
+    except Exception as exc:  # pragma: no cover - depends on external credentials
+        pytest.skip(f"Tushare 认证失败：{exc}. 请检查 token 或网络。")
+    return provider
+
+
+def _extract_open_close(df: pd.DataFrame) -> Tuple[float, float]:
+    if df.empty:
+        return 0.0, 0.0
+    row = df.iloc[0]
+    return float(row["open"]), float(row["close"])
+
+
+def _assert_pre_diff(df_none: pd.DataFrame, df_pre: pd.DataFrame, label: str) -> None:
+    if df_none.empty or df_pre.empty:
+        pytest.skip(f"{label} 数据为空，请检查权限或本地数据。")
+    open_none, close_none = _extract_open_close(df_none)
+    open_pre, close_pre = _extract_open_close(df_pre)
+    if abs(open_none - open_pre) < 1e-9 and abs(close_none - close_pre) < 1e-9:
+        raise AssertionError(f"{label} 前复权与未复权无差异，复权口径可能未生效。")
 
 
 def _authenticate_providers() -> Tuple[JQDataProvider, MiniQMTProvider]:
@@ -263,3 +297,74 @@ def test_ping_an_bank_real_parity() -> None:
     # 若运行到此处，代表两个窗口的价格均在容差内
     window_desc = _describe_windows(WINDOWS)
     print(f"平安银行 windows {window_desc} parity check passed.")
+
+
+def test_tushare_vs_jqdata_single_day() -> None:
+    """
+    验证 Tushare 与 JQData 在 2025-07-01 的前复权/未复权差异与口径一致性。
+    """
+    _check_prerequisites()
+    _check_tushare_prerequisites()
+
+    jq = JQDataProvider()
+    try:
+        jq.auth()
+    except Exception as exc:  # pragma: no cover - depends on external credentials
+        pytest.skip(f"JQData 认证失败：{exc}. 请检查账号或网络。")
+    ts = _authenticate_tushare()
+
+    security = "000001.XSHE"
+    date_str = "2025-07-01"
+
+    jq_none = jq.get_price(security, start_date=date_str, end_date=date_str, fq=None)
+    jq_pre = jq.get_price(security, start_date=date_str, end_date=date_str, fq="pre")
+    ts_none = ts.get_price(security, start_date=date_str, end_date=date_str, fq=None)
+    ts_pre = ts.get_price(security, start_date=date_str, end_date=date_str, fq="pre")
+
+    _assert_pre_diff(jq_none, jq_pre, "JQData")
+    _assert_pre_diff(ts_none, ts_pre, "Tushare")
+
+    jq_open, jq_close = _extract_open_close(jq_pre)
+    ts_open, ts_close = _extract_open_close(ts_pre)
+    epsilon = 0.05
+    assert abs(jq_open - ts_open) <= epsilon
+    assert abs(jq_close - ts_close) <= epsilon
+
+
+def test_multi_provider_single_day_fq_diff() -> None:
+    """
+    验证多个数据源在同一日期的前复权与未复权存在差异。
+    """
+    security = "000001.XSHE"
+    date_str = "2025-07-01"
+    providers = []
+
+    if os.getenv("JQDATA_USERNAME") and os.getenv("JQDATA_PASSWORD"):
+        providers.append("jqdata")
+    if os.getenv("TUSHARE_TOKEN"):
+        providers.append("tushare")
+    if os.getenv("QMT_DATA_PATH"):
+        providers.append("qmt")
+    if os.getenv("QMT_SERVER_TOKEN"):
+        providers.append("remote-qmt")
+
+    if not providers:
+        pytest.skip("未检测到可用的数据源配置。")
+
+    original_provider = data_api._provider
+    original_auth_attempted = data_api._auth_attempted
+    original_cache = data_api._security_info_cache
+
+    try:
+        for name in providers:
+            try:
+                set_data_provider(name)
+                df_none = get_price(security, start_date=date_str, end_date=date_str, fq=None)
+                df_pre = get_price(security, start_date=date_str, end_date=date_str, fq="pre")
+            except Exception as exc:
+                pytest.skip(f"{name} 调用失败：{exc}")
+            _assert_pre_diff(df_none, df_pre, name)
+    finally:
+        data_api._provider = original_provider
+        data_api._auth_attempted = original_auth_attempted
+        data_api._security_info_cache = original_cache

@@ -205,6 +205,27 @@ class QmtBroker(BrokerBase):
         except Exception:
             return []
 
+    def get_open_orders(self) -> List[Dict[str, Any]]:
+        self._ensure_connected()
+        orders = self.sync_orders()
+        open_states = {
+            OrderStatus.new.value,
+            OrderStatus.open.value,
+            OrderStatus.filling.value,
+            OrderStatus.canceling.value,
+        }
+        result: List[Dict[str, Any]] = []
+        for item in orders:
+            status = item.get("status")
+            mapped = self._map_order_status(status)
+            mapped_val = mapped.value if isinstance(mapped, OrderStatus) else mapped
+            if mapped_val in open_states:
+                row = dict(item)
+                row["status"] = mapped_val
+                row["raw_status"] = status
+                result.append(row)
+        return result
+
     async def buy(
         self,
         security: str,

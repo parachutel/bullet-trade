@@ -4,7 +4,26 @@
     "功能1-价格精度": "由 category 决定：stock=2位小数(0.01步长)，fund/money_market_fund=3位小数(0.001步长)",
     "功能2-T+0交易": "由 tplus 决定：tplus=0 当日可卖(跨境ETF/黄金ETF等)，tplus=1 次日才能卖(普通A股ETF)",
     "功能3-交易费用": "由 category 决定：money_market_fund=无佣金无滑点，fund=无印花税，stock=有印花税",
-    "优先级": "by_code > by_prefix > by_category，代码级覆盖优先级最高"
+    "优先级": "by_code > by_prefix > by_category，代码级覆盖优先级最高",
+    "功能4-最小下单": "lot_rules 控制最小手数与步进规则，支持市场/前缀/代码级覆盖"
+  },
+
+  "lot_rules": {
+    "_doc": "最小下单/步进规则：min_lot=最小手数，step=步进",
+    "default": { "min_lot": 100, "step": 100 },
+    "by_market": {
+      "BJ": { "min_lot": 100, "step": 1 }
+    },
+    "by_prefix": {
+      "68": { "min_lot": 200, "step": 1 },
+      "110": { "min_lot": 10, "step": 10 },
+      "113": { "min_lot": 10, "step": 10 },
+      "118": { "min_lot": 10, "step": 10 },
+      "123": { "min_lot": 10, "step": 10 },
+      "127": { "min_lot": 10, "step": 10 },
+      "128": { "min_lot": 10, "step": 10 }
+    },
+    "by_code": {}
   },
 
   "by_category": {

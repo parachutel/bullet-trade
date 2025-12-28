@@ -279,11 +279,31 @@ def _merge_overrides(security: str, base_info: Dict[str, Any]) -> Dict[str, Any]
             out.setdefault(k, v)
 
     # 代码覆盖
-    code_over = by_code.get(security, {}) if isinstance(by_code, dict) else {}
+    code_over = {}
+    if isinstance(by_code, dict):
+        for key in _candidate_security_keys(security):
+            if key in by_code:
+                code_over = by_code.get(key, {}) or {}
+                break
     if isinstance(code_over, dict):
         out.update({k: v for k, v in code_over.items() if v is not None})
 
     return out
+
+
+def _candidate_security_keys(security: str) -> List[str]:
+    """生成兼容后缀的候选键，用于规则匹配。"""
+    if not security or "." not in security:
+        return [security]
+    code, suffix = security.split(".", 1)
+    suffix = suffix.upper()
+    if suffix in ("XSHG", "SH"):
+        return [security, f"{code}.XSHG", f"{code}.SH"]
+    if suffix in ("XSHE", "SZ"):
+        return [security, f"{code}.XSHE", f"{code}.SZ"]
+    if suffix in ("BJ", "BSE"):
+        return [security, f"{code}.BJ", f"{code}.BSE"]
+    return [security]
 
 
 class BacktestCurrentData:
@@ -785,7 +805,7 @@ def get_price(
     
     # 警告：panel=True 已废弃，与聚宽官方保持一致
     # 聚宽官方提示：不建议继续使用panel（panel将在pandas未来版本不再支持，将来升级pandas后，您的策略会失败）
-    if panel:
+    if panel and isinstance(security, (list, tuple, set)):
         import warnings
         warnings.warn(
             "不建议继续使用panel（panel将在pandas未来版本不再支持，将来升级pandas后，您的策略会失败），"

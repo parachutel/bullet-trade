@@ -662,22 +662,17 @@ class LiveEngine:
             log.debug(f"{order.security} 无需交易或数量不足，跳过")
             return None
 
-        lot_size = pricing.infer_lot_size(order.security)
-        if lot_size > 1:
-            amount = (amount // lot_size) * lot_size
-        if amount <= 0:
-            log.debug(f"{order.security} 扣除手数后无可交易数量")
-            return None
-
+        closeable = None
         if not is_buy:
             closeable = self._get_closeable_amount(order.security)
             if closeable <= 0:
                 log.warning(f"{order.security} 当前无可卖数量，忽略订单")
                 return None
-            amount = min(amount, closeable)
-            if amount <= 0:
-                log.warning(f"{order.security} 可卖数量不足，忽略订单")
-                return None
+        amount = pricing.adjust_order_amount(order.security, amount, is_buy, closeable=closeable)
+        if amount <= 0:
+            msg = "扣除手数后无可交易数量" if is_buy else "可卖数量不足或不足最小手数"
+            log.debug(f"{order.security} {msg}")
+            return None
 
         exec_price: Optional[float] = None
         style_obj = getattr(order, "style", None)
