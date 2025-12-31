@@ -3,6 +3,20 @@
 本文档记录所有重要的变更。格式基于 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.0.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.6.0] - 2026-01-01 新年快乐~
+
+### 新增
+- **交易日历驱动调度**：`run_weekly/run_monthly` 支持按“当周/当月第 N 个交易日”（含倒数）触发，新增 `reference_security/force` 控制参考标的与起算方式；引入全局交易日历构建/缓存（同步与异步调度共用），`generate_daily_schedule`/异步调度器按日预生成任务表，回测/实盘按真实交易日节奏执行
+
+### 增强
+- **数据源直连与 SDK 回退**：`get_data_provider("name")` 可直接拿到指定数据源实例（不修改默认数据源），按名称缓存实例与认证状态；当 provider 未实现方法时，同源 SDK 自动兜底（JQData→`jqdatasdk`、Tushare→`pro_api`、MiniQMT→`xtquant.xtdata`），并补充示例策略、使用指引与测试用例
+- **配置与文档**：`.env` 示例新增 `MINIQMT_MARKET` 以明确交易日市场代码，清理未使用的 `CACHE_TTL_DAYS/BACKTEST_OUTPUT_DIR/DEBUG` 等字段；`config.md` 与 env loader 及对应单测同步更新，避免混淆配置
+
+### 修复
+- **MiniQMT 停牌判断准确性**：停牌逻辑改为按状态码白名单判定（1/17/20 等停牌、区分休市/集合竞价/波动性中断），避免午休、集合竞价被误判为停牌
+
+---
+
 ## [0.5.8] - 2025-12-29
 
 ### 修复
