@@ -806,6 +806,9 @@ class QmtBroker(BrokerBase):
         except Exception:
             raw_positions = None
         positions: List[Dict[str, Any]] = []
+        codes = [p.stock_code for p in raw_positions]
+        from xtquant import xtdata  # type: ignore
+        ticks = xtdata.get_full_tick(codes) if codes else {}
         if raw_positions:
             for pos in raw_positions:
                 try:
@@ -830,6 +833,7 @@ class QmtBroker(BrokerBase):
                         getattr(pos, "cost_price", None)
                         or getattr(pos, "avg_price", None)
                         or getattr(pos, "average_price", None)
+                        or getattr(pos, "open_price", None)
                         or 0.0
                     )
                     # last 价格字段尽量不兜底到字符串字段（如 market），避免类型错误
@@ -839,6 +843,8 @@ class QmtBroker(BrokerBase):
                         or getattr(pos, "current_price", None)
                         or getattr(pos, "last", None)
                     )
+                    if not last and pos.stock_code in ticks and ticks[pos.stock_code]:
+                        last = ticks[pos.stock_code].get("lastPrice")
                     market_value = getattr(pos, "market_value", None)
                     if market_value is None and last is not None:
                         try:
