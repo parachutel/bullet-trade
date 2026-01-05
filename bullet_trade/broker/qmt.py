@@ -854,9 +854,15 @@ class QmtBroker(BrokerBase):
                             market_value = float(last) * float(qty or 0)
                         except Exception:
                             market_value = None
+                    try:
+                        from xtquant import xtdata  # type: ignore
+                        name = xtdata.get_instrument_detail(code).get("InstrumentName")
+                    except Exception:
+                        name = None
                     positions.append(
                         {
                             "security": self._map_to_jq_symbol(code),
+                            "name": name,
                             "amount": int(qty or 0),
                             "closeable_amount": int(avail or 0),
                             "avg_cost": float(avg_cost or 0.0),
